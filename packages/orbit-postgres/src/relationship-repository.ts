@@ -1,8 +1,14 @@
 import type { PoolClient } from 'pg';
-import type { OrbitRelationship, OrbitRelationshipRepository, RelationshipQuery } from '@tmcc/orbit-kernel';
-import { OrbitNotFoundError } from '@tmcc/orbit-kernel';
+import type { OrbitRelationship, OrbitRelationshipRepository, RelationshipQuery, Metadata, Page } from '@tmcc/orbit-kernel';
+import { OrbitNotFoundError, OrbitVersionConflictError } from '@tmcc/orbit-kernel';
 
 type PostgresClient = PoolClient;
+
+interface UpdateRelationshipInput {
+  readonly relationshipType?: string;
+  readonly metadata?: Metadata;
+  readonly expectedVersion: number;
+}
 
 function mapOrbitRelationshipRow(row: any): OrbitRelationship {
   return {
@@ -47,7 +53,7 @@ export class PostgresOrbitRelationshipRepository implements OrbitRelationshipRep
     return result.rowCount === 0 ? null : mapOrbitRelationshipRow(result.rows[0]);
   }
 
-  async findMany(query?: RelationshipQuery) {
+  async findMany(query?: RelationshipQuery): Promise<Page<OrbitRelationship>> {
     const filters: string[] = [];
     const values: any[] = [];
 
@@ -82,5 +88,59 @@ export class PostgresOrbitRelationshipRepository implements OrbitRelationshipRep
     return {
       items: result.rows.map(mapOrbitRelationshipRow)
     };
+  }
+
+  async update(id: string, input: UpdateRelationshipInput): Promise<OrbitRelationship> {
+    const sets: string[] = [];
+    const values: any[] = [id, input.expectedVersion];
+
+    if (input.relationshipType !== undefined) {
+      values.push(input.relationshipType);
+      sets.push(`relationship_type = $${values.length}`);
+    }
+
+    if (input.metadata !== undefined) {
+      values.push(input.metadata);
+      sets.push(`metadata = $${values.length}`);
+    }
+
+    if (sets.length === 0) {
+      throw new Error('No fields provided to update for OrbitRelationship');
+    }
+
+    sets.push('version = version + 1');
+    sets.push('updated_at = now()');
+
+    const result = await this.client.query(
+      `UPDATE orbit_relationships SET ${sets.join(', ')} WHERE id = $1 AND version = $2 RETURNING *`,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      const existing = await this.client.query('SELECT version FROM orbit_relationships WHERE id = $1', [id]);
+      if (existing.rowCount === 0) {
+        throw new OrbitNotFoundError('OrbitRelationship', id);
+      }
+      throw new OrbitVersionConflictError(id, input.expectedVersion, existing.rows[0].version);
+    }
+
+    return mapOrbitRelationshipRow(result.rows[0]);
+  }
+
+  async delete(id: string, expectedVersion: number): Promise<OrbitRelationship> {
+    const result = await this.client.query(
+      `DELETE FROM orbit_relationships WHERE id = $1 AND version = $2 RETURNING *`,
+      [id, expectedVersion]
+    );
+
+    if (result.rowCount === 0) {
+      const existing = await this.client.query('SELECT version FROM orbit_relationships WHERE id = $1', [id]);
+      if (existing.rowCount === 0) {
+        throw new OrbitNotFoundError('OrbitRelationship', id);
+      }
+      throw new OrbitVersionConflictError(id, expectedVersion, existing.rows[0].version);
+    }
+
+    return mapOrbitRelationshipRow(result.rows[0]);
   }
 }
