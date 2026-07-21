@@ -3,12 +3,19 @@ import type { UnitOfWork } from '@tmcc/orbit-kernel';
 import { PostgresOrbitObjectRepository } from './object-repository.js';
 import { PostgresOrbitEventRepository } from './event-repository.js';
 import { PostgresOrbitRelationshipRepository } from './relationship-repository.js';
+import type { DomainEvent } from './domain-event.js';
+import { EventPublisher } from './event-publisher.js';
+import { EventBus, InMemoryEventBus } from './event-bus.js';
 
 export class PostgresUnitOfWork implements UnitOfWork {
   private client: PoolClient | null = null;
   private inTransaction = false;
+  private pendingEvents: DomainEvent[] = [];
+  private readonly eventPublisher: EventPublisher;
 
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Pool, eventBus: EventBus = new InMemoryEventBus()) {
+    this.eventPublisher = new EventPublisher(eventBus);
+  }
 
   get objectRepository() {
     return new PostgresOrbitObjectRepository(this.getClient());
@@ -45,8 +52,14 @@ export class PostgresUnitOfWork implements UnitOfWork {
       throw new Error('No active transaction to commit');
     }
 
-    await client.query('COMMIT');
-    await this.dispose();
+    try {
+      await client.query('COMMIT');
+      const events = [...this.pendingEvents];
+      this.clearPendingEvents();
+      await Promise.all(events.map((event) => this.eventPublisher.publish(event)));
+    } finally {
+      await this.dispose();
+    }
   }
 
   async rollback(): Promise<void> {
@@ -55,17 +68,30 @@ export class PostgresUnitOfWork implements UnitOfWork {
       throw new Error('No active transaction to rollback');
     }
 
-    await client.query('ROLLBACK').catch(() => {});
-    await this.dispose();
+    try {
+      await client.query('ROLLBACK').catch(() => {});
+    } finally {
+      this.clearPendingEvents();
+      await this.dispose();
+    }
   }
 
   async dispose(): Promise<void> {
+    this.clearPendingEvents();
+
     if (this.client) {
       this.client.release();
       this.client = null;
     }
 
     this.inTransaction = false;
+  }
+
+  enqueueEvent(event: DomainEvent): void {
+    if (!this.inTransaction) {
+      throw new Error('Cannot enqueue domain events outside of a transaction');
+    }
+    this.pendingEvents.push(event);
   }
 
   async transaction<T>(operation: () => Promise<T>): Promise<T> {
@@ -79,5 +105,9 @@ export class PostgresUnitOfWork implements UnitOfWork {
       await this.rollback().catch(() => {});
       throw error;
     }
+  }
+
+  private clearPendingEvents(): void {
+    this.pendingEvents.length = 0;
   }
 }
