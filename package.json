@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "pnpm --parallel --filter ./apps/* dev",
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "pnpm --filter @tmcc/orbit-kernel build && pnpm -r typecheck",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
     "infra:up": "docker compose up -d",
