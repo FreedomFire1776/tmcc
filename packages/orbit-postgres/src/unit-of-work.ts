@@ -6,6 +6,7 @@ import { PostgresOrbitRelationshipRepository } from './relationship-repository.j
 
 export class PostgresUnitOfWork implements UnitOfWork {
   private client: PoolClient | null = null;
+  private inTransaction = false;
 
   constructor(private readonly pool: Pool) {}
 
@@ -28,21 +29,55 @@ export class PostgresUnitOfWork implements UnitOfWork {
     return this.client;
   }
 
+  async begin(): Promise<void> {
+    if (this.inTransaction) {
+      throw new Error('Transaction already in progress');
+    }
+
+    this.client = await this.pool.connect();
+    await this.client.query('BEGIN');
+    this.inTransaction = true;
+  }
+
+  async commit(): Promise<void> {
+    const client = this.getClient();
+    if (!this.inTransaction) {
+      throw new Error('No active transaction to commit');
+    }
+
+    await client.query('COMMIT');
+    await this.dispose();
+  }
+
+  async rollback(): Promise<void> {
+    const client = this.getClient();
+    if (!this.inTransaction) {
+      throw new Error('No active transaction to rollback');
+    }
+
+    await client.query('ROLLBACK').catch(() => {});
+    await this.dispose();
+  }
+
+  async dispose(): Promise<void> {
+    if (this.client) {
+      this.client.release();
+      this.client = null;
+    }
+
+    this.inTransaction = false;
+  }
+
   async transaction<T>(operation: () => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    this.client = client;
+    await this.begin();
 
     try {
-      await client.query('BEGIN');
       const result = await operation();
-      await client.query('COMMIT');
+      await this.commit();
       return result;
     } catch (error) {
-      await client.query('ROLLBACK').catch(() => {});
+      await this.rollback().catch(() => {});
       throw error;
-    } finally {
-      this.client = null;
-      client.release();
     }
   }
 }
