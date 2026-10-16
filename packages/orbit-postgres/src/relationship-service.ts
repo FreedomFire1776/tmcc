@@ -9,8 +9,8 @@ import type {
 } from '@tmcc/orbit-kernel';
 import { PostgresUnitOfWork } from './unit-of-work.js';
 import { PostgresOrbitRelationshipRepository } from './relationship-repository.js';
-import type { QueryService } from './query-service.js';
-import type { SearchService, SearchRequest } from './search-service.js';
+import type { QueryService, RelatedObjectQuery } from './query-service.js';
+import type { SearchService } from './search-service.js';
 import type { ObjectService } from './object-service.js';
 import { RelationshipNotFoundError, RelationshipVersionConflictError, RelationshipAlreadyExistsError } from './relationship-errors.js';
 import type { RelationshipModel, RelationshipLifecyclePayload, RelationshipLifecycleEvent } from './relationship-types.js';
@@ -21,22 +21,21 @@ export interface RelationshipService {
   removeRelationship(id: UUID, expectedVersion: number): Promise<RelationshipModel>;
   updateRelationship(id: UUID, input: Partial<Omit<OrbitRelationship, 'id' | 'sourceObjectId' | 'targetObjectId' | 'createdAt' | 'updatedAt'>> & { expectedVersion: number }): Promise<RelationshipModel>;
   getRelationships(query?: RelationshipQuery): Promise<Page<RelationshipModel>>;
-  getRelatedObjects(query: RelationshipQuery & { cursor?: string; limit?: number; searchRequest?: SearchRequest }): Promise<Page<OrbitObject>>;
+  getRelatedObjects(query: RelatedObjectQuery): Promise<Page<OrbitObject>>;
   relationshipExists(sourceObjectId: UUID, targetObjectId: UUID, relationshipType: string): Promise<boolean>;
 }
 
 export class PostgresRelationshipService implements RelationshipService {
   readonly #repository: PostgresOrbitRelationshipRepository;
   readonly #queryService: QueryService;
-  readonly #searchService: SearchService;
   readonly #unitOfWork: PostgresUnitOfWork;
   readonly #objectService: ObjectService;
 
-  constructor(unitOfWork: PostgresUnitOfWork, queryService: QueryService, searchService: SearchService, objectService: ObjectService) {
+  // Keep the search-service argument for compatibility with existing service constructors.
+  constructor(unitOfWork: PostgresUnitOfWork, queryService: QueryService, _searchService: SearchService, objectService: ObjectService) {
     this.#unitOfWork = unitOfWork;
     this.#repository = this.#unitOfWork.relationshipRepository;
     this.#queryService = queryService;
-    this.#searchService = searchService;
     this.#objectService = objectService;
   }
 
@@ -116,18 +115,8 @@ export class PostgresRelationshipService implements RelationshipService {
     };
   }
 
-  async getRelatedObjects(query: RelationshipQuery & { cursor?: string; limit?: number; searchRequest?: SearchRequest }): Promise<Page<OrbitObject>> {
-    const related = await this.#queryService.findByRelationship(query);
-    if (!query.searchRequest) {
-      return related;
-    }
-
-    const searchResults = await this.#searchService.search(query.searchRequest);
-    const searchIds = new Set(searchResults.items.map((object) => object.id));
-    return {
-      items: related.items.filter((object) => searchIds.has(object.id)),
-      ...(related.nextCursor ? { nextCursor: related.nextCursor } : {})
-    };
+  async getRelatedObjects(query: RelatedObjectQuery): Promise<Page<OrbitObject>> {
+    return this.#queryService.findByRelationship(query);
   }
 
   async relationshipExists(sourceObjectId: UUID, targetObjectId: UUID, relationshipType: string): Promise<boolean> {

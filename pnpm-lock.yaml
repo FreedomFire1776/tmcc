@@ -67,6 +67,9 @@ importers:
         specifier: ^8.11.0
         version: 8.22.0
     devDependencies:
+      '@electric-sql/pglite':
+        specifier: 0.5.10
+        version: 0.5.10
       '@types/node':
         specifier: ^22.15.0
         version: 22.20.1
@@ -78,6 +81,9 @@ importers:
         version: 5.9.3
 
 packages:
+
+  '@electric-sql/pglite@0.5.10':
+    resolution: {integrity: sha512-tXc/25U3ulOkiRQuTFdwIv+JhBqtMdAF7Gvo6CfZZWtSB4+hgC4Wr2vwK5ngvvN5PJfAAEGIsfyCVy1JhCOBYw==}
 
   '@emnapi/runtime@1.11.2':
     resolution: {integrity: sha512-kyOl3X0DuTiT1h2ft8r2fYO8JYtU9a9Xis/zBSiGArNaagCOWx90N1k2wxp18czFDH+OgcWGb5ZP/XMt3dcyPA==}
@@ -773,6 +779,8 @@ packages:
     engines: {node: '>=0.4'}
 
 snapshots:
+
+  '@electric-sql/pglite@0.5.10': {}
 
   '@emnapi/runtime@1.11.2':
     dependencies:
