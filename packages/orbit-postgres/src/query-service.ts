@@ -1,60 +1,20 @@
 import type { Pool } from 'pg';
-import type {
-  ObjectQuery,
-  OrbitObject,
-  OrbitRelationship,
-  ObjectType,
-  OrbitStatus,
-  Page,
-  RelationshipQuery,
-  UUID
-} from '@tmcc/orbit-kernel';
+import type { OrbitObject, ObjectType, Page, PageRequest, RelationshipQuery, UUID } from '@tmcc/orbit-kernel';
+import type { SearchRequest } from './search-service.js';
+import { appendObjectSearchFilters, mapOrbitObjectRow, queryObjectPage } from './object-query.js';
 
-export interface QueryPageRequest {
-  readonly limit?: number;
-  readonly cursor?: string;
+export interface QueryPageRequest extends PageRequest {}
+
+export interface RelatedObjectQuery extends RelationshipQuery {
+  /** Only search filters are used here. The outer limit and cursor control the combined page. */
+  readonly searchRequest?: SearchRequest;
 }
 
 export interface QueryService {
   findById(id: UUID): Promise<OrbitObject | null>;
   findByType(objectType: ObjectType, request?: QueryPageRequest): Promise<Page<OrbitObject>>;
-  findByRelationship(query: RelationshipQuery & QueryPageRequest): Promise<Page<OrbitObject>>;
-}
-
-interface CursorPayload {
-  createdAt: string;
-  id: UUID;
-}
-
-function encodeCursor(payload: CursorPayload): string {
-  return Buffer.from(`${payload.createdAt}|${payload.id}`).toString('base64');
-}
-
-function decodeCursor(cursor: string): CursorPayload {
-  const decoded = Buffer.from(cursor, 'base64').toString('utf8');
-  const [createdAt, id] = decoded.split('|');
-  if (!createdAt || !id) {
-    throw new Error('Invalid cursor');
-  }
-  return { createdAt, id: id as UUID };
-}
-
-function mapOrbitObjectRow(row: any): OrbitObject {
-  return {
-    id: row.id,
-    objectType: row.object_type,
-    title: row.title,
-    status: row.status,
-    ownerId: row.owner_id ?? undefined,
-    classification: row.classification ?? undefined,
-    tags: row.tags ?? [],
-    labels: row.labels ?? {},
-    version: row.version,
-    metadata: row.metadata ?? {},
-    extensions: row.extensions ?? {},
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  };
+  /** Source filters return targets; target-only filters return sources; unanchored queries return both endpoints. */
+  findByRelationship(query: RelatedObjectQuery): Promise<Page<OrbitObject>>;
 }
 
 export class PostgresQueryService implements QueryService {
@@ -65,68 +25,42 @@ export class PostgresQueryService implements QueryService {
     return result.rowCount === 0 ? null : mapOrbitObjectRow(result.rows[0]);
   }
 
-  async findByType(objectType: ObjectType, request: QueryPageRequest = {}) {
-    const values: any[] = [objectType];
-    let sql = 'SELECT * FROM orbit_objects WHERE object_type = $1';
-
-    if (request.cursor) {
-      const cursor = decodeCursor(request.cursor);
-      values.push(cursor.createdAt, cursor.id);
-      sql += ` AND (created_at < $${values.length - 1} OR (created_at = $${values.length - 1} AND id < $${values.length}))`;
-    }
-
-    sql += ' ORDER BY created_at DESC, id DESC';
-    const limit = request.limit ?? 25;
-    values.push(limit + 1);
-    sql += ` LIMIT $${values.length}`;
-
-    const result = await this.pool.query(sql, values);
-    const items = result.rows.slice(0, limit).map(mapOrbitObjectRow);
-    const nextCursor = result.rows.length > limit ? encodeCursor({ createdAt: result.rows[limit - 1].created_at, id: result.rows[limit - 1].id }) : undefined;
-
-    return nextCursor ? { items, nextCursor } : { items };
+  async findByType(objectType: ObjectType, request: QueryPageRequest = {}): Promise<Page<OrbitObject>> {
+    return queryObjectPage(this.pool, ['o.object_type = $1'], [objectType], request);
   }
 
-  async findByRelationship(query: RelationshipQuery & QueryPageRequest) {
-    const filters: string[] = [];
-    const values: any[] = [];
+  async findByRelationship(query: RelatedObjectQuery): Promise<Page<OrbitObject>> {
+    const values: unknown[] = [];
+    const relationshipFilters: string[] = [];
 
-    let sql = `SELECT o.* FROM orbit_objects o JOIN orbit_relationships r ON o.id = r.source_object_id OR o.id = r.target_object_id`;
+    // Select the opposite endpoint for anchored queries. If both anchors are supplied,
+    // constrain the same relationship and return its target (the source-query direction).
+    if (query.sourceObjectId) {
+      relationshipFilters.push('r.target_object_id = o.id');
+    } else if (query.targetObjectId) {
+      relationshipFilters.push('r.source_object_id = o.id');
+    } else {
+      relationshipFilters.push('(r.source_object_id = o.id OR r.target_object_id = o.id)');
+    }
 
     if (query.sourceObjectId) {
       values.push(query.sourceObjectId);
-      filters.push(`r.source_object_id = $${values.length}`);
+      relationshipFilters.push(`r.source_object_id = $${values.length}`);
     }
-
     if (query.targetObjectId) {
       values.push(query.targetObjectId);
-      filters.push(`r.target_object_id = $${values.length}`);
+      relationshipFilters.push(`r.target_object_id = $${values.length}`);
     }
-
     if (query.relationshipType) {
       values.push(query.relationshipType);
-      filters.push(`r.relationship_type = $${values.length}`);
+      relationshipFilters.push(`r.relationship_type = $${values.length}`);
     }
 
-    if (filters.length > 0) {
-      sql += ` WHERE ${filters.join(' AND ')}`;
+    // EXISTS restricts objects without multiplying rows when several relationships match.
+    const filters = [`EXISTS (SELECT 1 FROM orbit_relationships r WHERE ${relationshipFilters.join(' AND ')})`];
+    if (query.searchRequest) {
+      appendObjectSearchFilters(query.searchRequest, filters, values);
     }
-
-    if (query.cursor) {
-      const cursor = decodeCursor(query.cursor);
-      values.push(cursor.createdAt, cursor.id);
-      sql += values.length > 0 ? ` AND (o.created_at < $${values.length - 1} OR (o.created_at = $${values.length - 1} AND o.id < $${values.length}))` : ` WHERE (o.created_at < $1 OR (o.created_at = $1 AND o.id < $2))`;
-    }
-
-    sql += ' ORDER BY o.created_at DESC, o.id DESC';
-    const limit = query.limit ?? 25;
-    values.push(limit + 1);
-    sql += ` LIMIT $${values.length}`;
-
-    const result = await this.pool.query(sql, values);
-    const items = result.rows.slice(0, limit).map(mapOrbitObjectRow);
-    const nextCursor = result.rows.length > limit ? encodeCursor({ createdAt: result.rows[limit - 1].created_at, id: result.rows[limit - 1].id }) : undefined;
-
-    return nextCursor ? { items, nextCursor } : { items };
+    return queryObjectPage(this.pool, filters, values, query);
   }
 }

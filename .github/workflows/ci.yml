@@ -8,6 +8,22 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: tmcc
+          POSTGRES_PASSWORD: tmcc
+          POSTGRES_DB: tmcc_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tmcc -d tmcc_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ORBIT_TEST_DATABASE_URL: postgres://tmcc:tmcc@localhost:5432/tmcc_test
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -16,6 +32,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - run: pnpm test
       - run: pnpm build

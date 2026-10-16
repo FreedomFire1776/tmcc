@@ -15,6 +15,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm --filter @tmcc/orbit-kernel build && pnpm run build && node --test test/*.test.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "pg": "^8.11.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.10",
     "@types/node": "^22.15.0",
     "@types/pg": "^8.11.0",
     "typescript": "^5.8.0"
